@@ -544,6 +544,10 @@ class AlphaDPOTrainer(object):
     
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = None):
         """Save policy, optimizer, and scheduler state to disk."""
+        
+        # [수정] 들어오는 output_dir 인자를 무시하고 무조건 LATEST 경로로 고정합니다.
+        output_dir = os.path.join(self.run_dir, 'LATEST')
+
         is_peft_model = False
         try:
             from peft import PeftModel
@@ -553,7 +557,8 @@ class AlphaDPOTrainer(object):
             rank0_print('PEFT not installed or policy is not a PEFT model; skipping adapter save.', e)
 
         if is_peft_model:
-            adapter_dir = os.path.join(output_dir if output_dir is not None else os.path.join(self.run_dir, f'LATEST'), 'adapter')
+            # output_dir이 이미 LATEST로 고정되었으므로 그대로 사용
+            adapter_dir = os.path.join(output_dir, 'adapter')
             os.makedirs(adapter_dir, exist_ok=True)
             rank0_print(f'writing checkpoint to {adapter_dir}...')
             self.policy.save_pretrained(adapter_dir)
