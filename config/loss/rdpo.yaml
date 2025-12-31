@@ -1,0 +1,7 @@
+# do DPO preference-based training
+name: rdpo
+
+# the temperature parameter for DPO; lower values mean we care less about
+#   the reference model
+beta: 0.1
+alpha: 0.005
