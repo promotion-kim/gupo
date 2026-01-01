@@ -154,6 +154,8 @@ def get_reward_scores(samples, rm, device="cuda"):
 
     return scored_results
 
+# ... (앞부분 import 및 함수들은 동일) ...
+
 def main(args):
     set_seed(args.seed)
     print(args.generate)
@@ -186,13 +188,15 @@ def main(args):
         print("🔍 Checking and preparing model weights...")
         model_path, use_lora, lora_path = prepare_weights_for_vllm(checkpoint_dir)
         
-        print(f"🚀 Initializing vLLM Engine")
+        print(f"🚀 Initializing vLLM Engine (GPU Util: {args.gpu_memory_utilization})")
+        
+        # [수정된 부분] gpu_memory_utilization 인자 적용
         llm = LLM(
             model=model_path,
             enable_lora=use_lora,
             dtype="bfloat16",
             seed=args.seed,
-            gpu_memory_utilization=0.95,
+            gpu_memory_utilization=args.util, 
             max_model_len=args.max_len if args.max_len else config.model.get('max_length', 2048),
         )
         
@@ -228,6 +232,8 @@ def main(args):
         del llm
         gc.collect()
         torch.cuda.empty_cache()
+    
+    # ... (나머지 평가 및 저장 로직은 동일) ...
     else:
         output_path = os.path.join(
             args.output_dir,
@@ -267,7 +273,7 @@ def main(args):
     avg_reward = np.mean([x['reward_score'] for x in final_results])
 
     by_index_stats = {}
-    index_means = [] # [mean_response0, mean_response1, ...]
+    index_means = [] 
 
     for i in range(args.n_samples):
         subset = [x for x in final_results if x.get('output_index') == i]
@@ -337,6 +343,12 @@ if __name__ == "__main__":
 
     parser.add_argument("--rm", type=str, default=None, help = "Reward model to use for evaluation. Options: 'gpt2', 'armorm'")
     parser.add_argument("--generate", action='store_true', help="Whether to generate new responses or load existing ones")
+
+    # [수정된 부분] GPU 메모리 사용량 인자 추가
+    parser.add_argument("--util", type=float, default=0.95, help="GPU memory utilization for vLLM (default: 0.95)")
+
+    args = parser.parse_args()
+    main(args)
 
 
     args = parser.parse_args()
