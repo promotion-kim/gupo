@@ -188,7 +188,7 @@ def main(args):
         print("🔍 Checking and preparing model weights...")
         model_path, use_lora, lora_path = prepare_weights_for_vllm(checkpoint_dir)
         
-        print(f"🚀 Initializing vLLM Engine (GPU Util: {args.gpu_memory_utilization})")
+        print(f"🚀 Initializing vLLM Engine (GPU Util: {args.util})")
         
         # [수정된 부분] gpu_memory_utilization 인자 적용
         llm = LLM(
