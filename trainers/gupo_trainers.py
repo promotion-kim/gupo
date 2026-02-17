@@ -27,7 +27,6 @@ import time
 import json
 from typing import Optional, Dict, List, Union, Tuple
 
-
 def gupo_loss(policy_chosen_logps: torch.FloatTensor,
              policy_rejected_logps: torch.FloatTensor,
              reference_chosen_logps: torch.FloatTensor,
@@ -133,37 +132,6 @@ def concatenated_inputs(batch: Dict[str, Union[List, torch.LongTensor]]) -> Dict
             ), dim=0)
     return concatenated_batch
 
-
-class BetaMLP(nn.Module):
-    def __init__(self, policy):
-        super().__init__()
-
-        input_dim = policy.config.hidden_size * 2 # prompt + response
-        hidden_dim = input_dim // 4
-
-        self.main_norm = nn.LayerNorm(input_dim)
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-
-        self.res_norm = nn.LayerNorm(policy.config.hidden_size)
-        self.res_proj = nn.Linear(policy.config.hidden_size, hidden_dim)
-
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden_dim, 1)
-        self.final_act = nn.Softplus()
-    
-    def forward(self, concat_x, response_x):
-        h1 = self.fc1(self.main_norm(concat_x))
-        h_res = self.res_proj(self.res_norm(response_x))
-        h = self.act(h1 + h_res)
-        out = self.final_act(self.fc2(h))
-
-        return out
-        
-
-
-
-
-
 class GUPOTrainer(object):
     def __init__(self, policy: nn.Module, config: DictConfig, seed: int, run_dir: str, reference_model: Optional[nn.Module] = None, rank: int = 0, world_size: int = 1):
         """A trainer for a language model, supporting GUPO training.
@@ -206,19 +174,12 @@ class GUPOTrainer(object):
 
         self.policy = policy
         self.reference_model = reference_model
-
-        if not self.config.loss.residual:
-            print('✅ Using standard MLP for beta prediction')
-            input_dim = self.policy.config.hidden_size
-            self.mlp = nn.Sequential(
-                nn.Linear(input_dim, input_dim // 4),
-                nn.GELU(),
-                nn.Linear(input_dim // 4, 1),
-                nn.Softplus()
-                ).to(self.policy.device)
-        else:
-            print('✅ Using residual MLP for beta prediction')
-            self.mlp = BetaMLP(self.policy).to(self.policy.device)
+        self.mlp = nn.Sequential(
+            nn.Linear(self.policy.config.hidden_size, self.policy.config.hidden_size // 4),
+            nn.GELU(),
+            nn.Linear(self.policy.config.hidden_size // 4, 1),
+            nn.Softplus()
+            ).to(self.policy.device)
 
         self.eval_iterator = get_batch_iterator(
             **self.data_iterator_kwargs, 
@@ -270,27 +231,18 @@ class GUPOTrainer(object):
             if compute_beta:
                 all_hidden_states = outputs.hidden_states[-1] # (batch_size * 2, seq_len, hidden_size)
                 labels = concatenated_batch['concatenated_labels'][:, 1:].clone()
-                attention_mask = concatenated_batch['concatenated_attention_mask'][:, 1:].clone()
+                loss_mask = (labels != -100)
                 hidden_states_for_logps = all_hidden_states[:, :-1, :]
+                # hidden state mean pooling
+                masked_hidden_states = hidden_states_for_logps * loss_mask.unsqueeze(-1)
+                sum_hidden_states = masked_hidden_states.sum(dim=1)  # (batch_size * 2, hidden_size)
+                num_tokens = loss_mask.sum(dim=1).unsqueeze(-1).clamp(min=1)  # (batch_size * 2, 1)
+                mean_pooled_embeddings = sum_hidden_states / num_tokens  # (batch_size * 2, hidden_size)
                 
-                response_mask = (labels != -100)
-                prompt_mask = (attention_mask == 1) & (response_mask == 0)
-
-                prompt_sum = (hidden_states_for_logps * prompt_mask.unsqueeze(-1)).sum(dim=1)  # (batch_size * 2, hidden_size)
-                propmt_len = prompt_mask.sum(dim=1).unsqueeze(-1).clamp(min=1)  # (batch_size * 2, 1)
-                prompt_embedding = prompt_sum / propmt_len  # (batch_size * 2, hidden_size)
-
-                response_sum = (hidden_states_for_logps * response_mask.unsqueeze(-1)).sum(dim=1)  # (batch_size * 2, hidden_size)
-                response_len = response_mask.sum(dim=1).unsqueeze(-1).clamp(min=1)  # (batch_size * 2, 1)
-                response_embedding = response_sum / response_len  # (batch_size * 2, hidden_size)
-
-                prompt_response_input = torch.cat([prompt_embedding, response_embedding], dim=-1)  # (batch_size * 2, hidden_size * 2)
-                
-                if not self.config.loss.residual:
-                    all_betas = self.mlp(response_embedding.detach()).squeeze(-1)  # (batch_size * 2,)
-                else:
-                    all_betas = self.mlp(prompt_response_input.detach(), response_embedding.detach()).squeeze(-1)  # (batch_size * 2,)
-
+                # print(mean_pooled_embeddings)
+                # all_betas_raw = self.mlp(mean_pooled_embeddings.detach()).squeeze(-1)  # (batch_size * 2,)
+                all_betas = self.mlp(mean_pooled_embeddings.detach()).squeeze(-1)  # (batch_size * 2,)
+                # all_betas = all_betas_raw * 9.9 + 0.1  # scale to (0.1, 10.0)
                 chosen_betas = all_betas[:batch['chosen_input_ids'].shape[0]]
                 rejected_betas = all_betas[batch['chosen_input_ids'].shape[0]:]
 
@@ -556,10 +508,11 @@ class GUPOTrainer(object):
                             if self.config.loss.name == 'gupo':
                                 wandb.log({"reference_samples": reference_text_table}, step=self.example_counter)
 
-                    # if self.example_counter > 0:
-                    #     output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
-                    #     rank0_print(f'creating checkpoint to write to {output_dir}...')
-                    #     self.save(output_dir, mean_eval_metrics)
+                    if self.example_counter > 0:
+                        #output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
+                        output_dir = os.path.join(self.run_dir, 'LATEST')
+                        rank0_print(f'creating checkpoint to write to {output_dir}...')
+                        self.save(output_dir, mean_eval_metrics)
                 #### END EVALUATION ####
 
                 #### BEGIN TRAINING ####
@@ -606,12 +559,31 @@ class GUPOTrainer(object):
                     rank0_print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
             #### END TRAINING ####
 
-            rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
+            if self.rank == 0:
+                rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
+                
+                # 1. Epoch별 폴더에 저장 (예: epoch-1)
+                epoch_dir = os.path.join(self.run_dir, f'epoch-{epoch}')
+                self.save(epoch_dir, metrics=None)
+                rank0_print(f'Checkpoint saved to {epoch_dir}')
+
+                # 2. LATEST 폴더에 저장 (덮어쓰기)
+                latest_dir = os.path.join(self.run_dir, 'LATEST')
+                self.save(latest_dir, metrics=None)
+                rank0_print(f'Checkpoint saved to {latest_dir}')
             
-            output_dir = os.path.join(self.run_dir, f'epoch-{epoch}_step-{self.example_counter}')
-            self.save(output_dir, metrics=None)
+            # 멀티 GPU 사용 시 동기화
+            if self.world_size > 1:
+                import torch.distributed as dist
+                dist.barrier()
+
+            #rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
             
-            rank0_print(f'Checkpoint saved to {output_dir}')
+            #output_dir = os.path.join(self.run_dir, f'epoch-{epoch}_step-{self.example_counter}')
+            #output_dir = os.path.join(self.run_dir, 'LATEST')
+            #self.save(output_dir, metrics=None)
+            
+            #rank0_print(f'Checkpoint saved to {output_dir}')
 
 
     def clip_gradient(self):
@@ -760,10 +732,6 @@ class GUPOTrainer(object):
     
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = None):
         """Save policy, optimizer, and scheduler state to disk."""
-        
-        # [수정] 어떤 경로가 들어오든 LATEST 폴더로 고정합니다.
-        output_dir = os.path.join(self.run_dir, 'LATEST')
-
         is_peft_model = False
         try:
             from peft import PeftModel
@@ -773,8 +741,7 @@ class GUPOTrainer(object):
             rank0_print('PEFT not installed or policy is not a PEFT model; skipping adapter save.', e)
 
         if is_peft_model:
-            # output_dir이 이미 LATEST로 고정되었으므로 그대로 하위 경로 생성
-            adapter_dir = os.path.join(output_dir, 'adapter')
+            adapter_dir = os.path.join(output_dir if output_dir is not None else os.path.join(self.run_dir, f'LATEST'), 'adapter')
             os.makedirs(adapter_dir, exist_ok=True)
             rank0_print(f'writing checkpoint to {adapter_dir}...')
             self.policy.save_pretrained(adapter_dir)
@@ -784,12 +751,24 @@ class GUPOTrainer(object):
             self.write_state_dict(self.example_counter, policy_state_dict, metrics, 'policy.pt', output_dir)
             del policy_state_dict
 
+        mlp_state_dict = self.mlp.state_dict()
+        self.write_state_dict(self.example_counter, mlp_state_dict, metrics, 'mlp.pt', output_dir)
+        del mlp_state_dict
+        
         optimizer_state_dict = self.optimizer.state_dict()
         self.write_state_dict(self.example_counter, optimizer_state_dict, metrics, 'optimizer.pt', output_dir)
         del optimizer_state_dict
+        
+        optimizer_mlp_state_dict = self.optimizer_mlp.state_dict()
+        self.write_state_dict(self.example_counter, optimizer_mlp_state_dict, metrics, 'optimizer_mlp.pt', output_dir)
+        del optimizer_mlp_state_dict
 
         scheduler_state_dict = self.scheduler.state_dict()
         self.write_state_dict(self.example_counter, scheduler_state_dict, metrics, 'scheduler.pt', output_dir)
         del scheduler_state_dict
+
+        scheduler_mlp_state_dict = self.scheduler_mlp.state_dict()
+        self.write_state_dict(self.example_counter, scheduler_mlp_state_dict, metrics, 'scheduler_mlp.pt', output_dir)
+        del scheduler_mlp_state_dict
 
         print('Done.')
