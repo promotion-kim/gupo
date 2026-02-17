@@ -53,30 +53,11 @@ def get_shp(split: str, silent: bool = False, cache_dir: str = None) -> Dict[str
     return data
 
 
-def get_hh(split: str, silent: bool = False, cache_dir: str = None) -> Dict[str, Dict[str, Union[List[Tuple[int, int]], List[str], str]]]:
-    """Load the Anthropic Helpful-Harmless dataset from Huggingface and convert it to the necessary format.
+def get_hh(split: str, silent: bool = False, cache_dir: str = None, dataset_path: str = 'Anthropic/hh-rlhf') -> Dict[str, Dict[str, Union[List[Tuple[int, int]], List[str], str]]]:
+    """Load the Anthropic Helpful-Harmless dataset (or its noisy variants)."""
     
-       The dataset is converted to a dictionary with the following structure:
-       {
-           'prompt1': {
-               'responses': List[str],
-               'pairs': List[Tuple[int, int]],
-               'sft_target': str
-           },
-           'prompt2': {
-               ...
-           },
-       }
-
-       Prompts should be structured as follows:
-         \n\nHuman: <prompt>\n\nAssistant:
-       Multiple turns are allowed, but the prompt should always start with \n\nHuman: and end with \n\nAssistant:.
-       
-       For this dataset, the sft_target is just the chosen response.
-    """
-    print(f'Loading HH dataset ({split} split) from Huggingface...')
-    dataset = datasets.load_dataset('Anthropic/hh-rlhf', split=split, cache_dir=cache_dir)
-    #dataset = datasets.load_dataset('Anthropic/hh-rlhf', split=split, cache_dir=cache_dir, data_dir = 'harmless-base')
+    print(f'Loading HH dataset ({split} split) from {dataset_path}...')
+    dataset = datasets.load_dataset(dataset_path, split=split, cache_dir=cache_dir)
     print('done')
 
     def split_prompt_and_responses(ex):
@@ -86,8 +67,13 @@ def get_hh(split: str, silent: bool = False, cache_dir: str = None) -> Dict[str,
         return prompt, chosen_response, rejected_response
 
     data = defaultdict(lambda: defaultdict(list))
-    for row in tqdm.tqdm(dataset, desc='Processing HH', disable=silent):
-        prompt, chosen, rejected = split_prompt_and_responses(row)
+    for row in tqdm.tqdm(dataset, desc=f'Processing HH ({dataset_path})', disable=silent):
+        # 형식이 깨진 데이터가 있을 수 있으므로 예외처리 추가 (선택사항)
+        try:
+            prompt, chosen, rejected = split_prompt_and_responses(row)
+        except Exception:
+            continue
+            
         responses = [chosen, rejected]
         n_responses = len(data[prompt]['responses'])
         data[prompt]['pairs'].append((n_responses, n_responses + 1))
@@ -208,18 +194,24 @@ def messages_to_prompt_and_response(messages: List[Dict[str, str]]) -> Tuple[str
     return prompt, response
 
 
-def get_uf(split: str, silent: bool = False, cache_dir: str = None):
-    """
-    HuggingFaceH4/ultrafeedback_binarized:
-      - train_prefs / test_prefs
-    """
-    if split == "train":
+def get_uf(split: str, silent: bool = False, cache_dir: str = None, dataset_path: str = 'HuggingFaceH4/ultrafeedback_binarized'):
+    """Load UltraFeedback dataset (or its noisy variants)."""
+    
+    # UltraFeedback 원본은 train_prefs/test_prefs 스플릿 이름을 사용
+    # 우리가 만든 Noisy 데이터셋은 보통 train/test를 쓰지만, 
+    # synthetic_dataset.py에서 원본 스플릿 이름을 유지했다면 아래 로직이 유효함.
+    # 만약 에러가 나면 split 매핑 로직을 확인해야 함.
+    if split == "train" and "HuggingFaceH4" in dataset_path: 
         split = "train_prefs"
-    elif split == "test":
+    elif split == "test" and "HuggingFaceH4" in dataset_path:
         split = "test_prefs"
     
-    print(f'Loading UltraFeedback Binarized dataset ({split} split) from Huggingface...')
-    dataset = datasets.load_dataset('HuggingFaceH4/ultrafeedback_binarized', split=split, cache_dir=cache_dir)
+    # 우리가 만든 데이터셋이 'train'만 가지고 있을 경우를 대비한 안전장치
+    if "noise" in dataset_path and split == "train_prefs":
+        split = "train"
+    
+    print(f'Loading UltraFeedback dataset ({split} split) from {dataset_path}...')
+    dataset = datasets.load_dataset(dataset_path, split=split, cache_dir=cache_dir)
     print('done')
 
     data = defaultdict(lambda: defaultdict(list))
@@ -241,6 +233,7 @@ def get_uf(split: str, silent: bool = False, cache_dir: str = None):
             data[prompt]['sft_target'] = chosen_resp
 
         else:
+            # 예외 케이스 처리
             prompt, resp = messages_to_prompt_and_response(row['messages'])
             n_responses = len(data[prompt]['responses'])
             data[prompt]['responses'].append(resp)
@@ -250,17 +243,29 @@ def get_uf(split: str, silent: bool = False, cache_dir: str = None):
     return data
 
 def get_dataset(name: str, split: str, silent: bool = False, cache_dir: str = None):
-    """Load the given dataset by name. Supported by default are 'shp', 'hh', and 'se'."""
-    if name == 'shp':
+    """Load the given dataset by name. Handles custom paths for noisy datasets."""
+    
+    # 1. HH-RLHF 계열 (원본 또는 노이즈)
+    if name == 'hh':
+        data = get_hh(split, silent=silent, cache_dir=cache_dir, dataset_path='Anthropic/hh-rlhf')
+    elif 'hh-rlhf' in name:  # 예: "promotion/hh-rlhf-noise-10"
+        data = get_hh(split, silent=silent, cache_dir=cache_dir, dataset_path=name)
+        
+    # 2. UltraFeedback 계열 (원본 또는 노이즈)
+    elif name == 'uf':
+        data = get_uf(split, silent=silent, cache_dir=cache_dir, dataset_path='HuggingFaceH4/ultrafeedback_binarized')
+    elif 'ultrafeedback' in name: # 예: "promotion/ultrafeedback_binarized-noise-10"
+        data = get_uf(split, silent=silent, cache_dir=cache_dir, dataset_path=name)
+        
+    # 3. 기타
+    elif name == 'shp':
         data = get_shp(split, silent=silent, cache_dir=cache_dir)
-    elif name == 'hh':
-        data = get_hh(split, silent=silent, cache_dir=cache_dir)
     elif name == 'imdb':
         data = get_imdb(split, silent=silent, cache_dir=cache_dir)
-    elif name == 'uf':
-        data = get_uf(split, silent=silent, cache_dir=cache_dir)
     else:
-        raise ValueError(f"Unknown dataset '{name}'")
+        # 혹시 경로가 입력되었는데 위 조건에 안 걸린 경우, 일단 HH 포맷으로 시도해볼 수도 있음
+        # 하지만 명시적인 에러가 안전함
+        raise ValueError(f"Unknown dataset '{name}'. If using a custom path, ensure it contains 'hh-rlhf' or 'ultrafeedback'.")
 
     assert set(list(data.values())[0].keys()) == {'responses', 'pairs', 'sft_target'}, \
         f"Unexpected keys in dataset: {list(list(data.values())[0].keys())}"
@@ -401,6 +406,10 @@ def get_batch_iterator(names: List[str],
         silent: Whether to silence the progress bar(s).
         cache_dir: Directory to cache the datasets in.
     """
+
+    if isinstance(names, str):
+        names = [names]
+    
     assert n_epochs is not None or n_examples is not None, "Must specify either n_epochs or n_examples"
     if silent:
         datasets.logging.disable_progress_bar()
