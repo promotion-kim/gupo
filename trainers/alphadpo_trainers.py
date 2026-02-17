@@ -387,10 +387,10 @@ class AlphaDPOTrainer(object):
                             if self.config.loss.name == 'alphadpo':
                                 wandb.log({"reference_samples": reference_text_table}, step=self.example_counter)
 
-                    if self.example_counter > 0:
+                    '''if self.example_counter > 0:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
                         rank0_print(f'creating checkpoint to write to {output_dir}...')
-                        self.save(output_dir, mean_eval_metrics)
+                        self.save(output_dir, mean_eval_metrics)'''
                 #### END EVALUATION ####
 
                 #### BEGIN TRAINING ####
@@ -434,14 +434,21 @@ class AlphaDPOTrainer(object):
                 else:
                     rank0_print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
                     
-            rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
+            # [수정] Epoch이 끝날 때 저장하는 로직
+            rank0_print(f'End of Epoch {epoch}. checking save condition...')
             
-            output_dir = os.path.join(self.run_dir, f'epoch-{epoch}_step-{self.example_counter}')
-            self.save(output_dir, metrics=None)
+            # 조건 1: Epoch 1일 때
+            if epoch == 1:
+                output_dir = os.path.join(self.run_dir, f'epoch-1')
+                self.save(output_dir, metrics=None)
+                rank0_print(f'Epoch 1 checkpoint saved to {output_dir}')
             
-            rank0_print(f'Checkpoint saved to {output_dir}')
+            # 조건 2: 마지막 Epoch일 때 (LATEST로 저장)
+            if epoch == self.config.n_epochs:
+                output_dir = os.path.join(self.run_dir, 'LATEST')
+                self.save(output_dir, metrics=None)
+                rank0_print(f'Final checkpoint (LATEST) saved to {output_dir}')
                 #### END TRAINING ####
-
 
     def clip_gradient(self):
         """Clip the gradient norm of the parameters of a non-FSDP policy."""
