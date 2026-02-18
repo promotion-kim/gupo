@@ -28,7 +28,7 @@ wandb:
 #   we will try each of these directories in order; if none exist,
 #   we will create the last one and use it
 local_dirs:
-  - /ext_hdd/mhchoi/rupo_cache
+  - /ext_hdd/sjkim/rupo_cache
 
 sample_during_eval: true
 
