@@ -28,6 +28,14 @@ import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
 
+def stabilized_log1pexp(x):
+    """
+    Compute log(1 + exp(x)) in a numerically stable way."""
+    mask = x > 0
+    risky_x = torch.where(mask, x, torch.zeros_like(x))
+    safe_x = torch.where(mask, torch.zeros_like(x), x)
+    return torch.where(mask, risky_x + torch.log1p(torch.exp(-risky_x)), torch.log1p(torch.exp(safe_x)))
+
 
 def dpo_loss(policy_chosen_logps: torch.FloatTensor,
              policy_rejected_logps: torch.FloatTensor,
@@ -363,10 +371,11 @@ class BasicTrainer(object):
                             if self.config.loss.name == 'dpo':
                                 wandb.log({"reference_samples": reference_text_table}, step=self.example_counter)
 
-                    # if self.example_counter > 0:
-                    #     output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
-                    #     rank0_print(f'creating checkpoint to write to {output_dir}...')
-                    #     self.save(output_dir, mean_eval_metrics)
+                    '''if self.example_counter > 0:
+                        output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
+                        #output_dir = os.path.join(self.run_dir, 'LATEST')
+                        rank0_print(f'creating checkpoint to write to {output_dir}...')
+                        self.save(output_dir, mean_eval_metrics)'''
                 #### END EVALUATION ####
 
                 #### BEGIN TRAINING ####
@@ -410,12 +419,24 @@ class BasicTrainer(object):
                 else:
                     rank0_print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
                     
-            rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
-            
-            output_dir = os.path.join(self.run_dir, f'epoch-{epoch}_step-{self.example_counter}')
-            self.save(output_dir, metrics=None)
-            
-            rank0_print(f'Checkpoint saved to {output_dir}')
+            if self.rank == 0:
+                rank0_print(f'End of Epoch {epoch}. Saving checkpoint...')
+                
+                # 1. Epoch별 폴더 저장 (예: epoch-1)
+                epoch_dir = os.path.join(self.run_dir, f'epoch-{epoch}')
+                self.save(epoch_dir, metrics=None)
+                rank0_print(f'Checkpoint saved to {epoch_dir}')
+
+                # 2. LATEST 폴더 저장 (덮어쓰기)
+                latest_dir = os.path.join(self.run_dir, 'LATEST')
+                self.save(latest_dir, metrics=None)
+                rank0_print(f'Checkpoint saved to {latest_dir}')
+
+            # 멀티 GPU 동기화
+            if self.world_size > 1:
+                import torch.distributed as dist
+                dist.barrier()
+
                 #### END TRAINING ####
 
 
@@ -525,10 +546,6 @@ class BasicTrainer(object):
     
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = None):
         """Save policy, optimizer, and scheduler state to disk."""
-        
-        # [수정] 어떤 경로가 들어오든 LATEST 폴더로 고정합니다.
-        output_dir = os.path.join(self.run_dir, 'LATEST')
-
         is_peft_model = False
         try:
             from peft import PeftModel
@@ -538,8 +555,7 @@ class BasicTrainer(object):
             rank0_print('PEFT not installed or policy is not a PEFT model; skipping adapter save.', e)
 
         if is_peft_model:
-            # output_dir이 이미 LATEST로 고정되었으므로 그대로 하위 경로 생성
-            adapter_dir = os.path.join(output_dir, 'adapter')
+            adapter_dir = os.path.join(output_dir if output_dir is not None else os.path.join(self.run_dir, f'LATEST'), 'adapter')
             os.makedirs(adapter_dir, exist_ok=True)
             rank0_print(f'writing checkpoint to {adapter_dir}...')
             self.policy.save_pretrained(adapter_dir)
