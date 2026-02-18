@@ -195,22 +195,21 @@ def messages_to_prompt_and_response(messages: List[Dict[str, str]]) -> Tuple[str
 
 
 def get_uf(split: str, silent: bool = False, cache_dir: str = None, dataset_path: str = 'HuggingFaceH4/ultrafeedback_binarized'):
-    """Load UltraFeedback dataset (or its noisy variants)."""
+    """
+    Load UltraFeedback dataset (or its noisy variants).
+    UltraFeedback uses 'train_prefs' and 'test_prefs' instead of standard 'train'/'test'.
+    """
     
-    # UltraFeedback 원본은 train_prefs/test_prefs 스플릿 이름을 사용
-    # 우리가 만든 Noisy 데이터셋은 보통 train/test를 쓰지만, 
-    # synthetic_dataset.py에서 원본 스플릿 이름을 유지했다면 아래 로직이 유효함.
-    # 만약 에러가 나면 split 매핑 로직을 확인해야 함.
-    if split == "train" and "HuggingFaceH4" in dataset_path: 
+    # [수정된 부분] 조건문 없이 강제로 스플릿 이름 매핑
+    # UltraFeedback 계열 데이터는 무조건 _prefs가 붙은 이름을 사용하므로 변환이 필요함.
+    if split == "train":
         split = "train_prefs"
-    elif split == "test" and "HuggingFaceH4" in dataset_path:
+    elif split == "test":
         split = "test_prefs"
     
-    # 우리가 만든 데이터셋이 'train'만 가지고 있을 경우를 대비한 안전장치
-    if "noise" in dataset_path and split == "train_prefs":
-        split = "train"
-    
     print(f'Loading UltraFeedback dataset ({split} split) from {dataset_path}...')
+    
+    # 에러 발생 지점: 이제 split이 'test_prefs'로 변환되어 들어가므로 에러가 나지 않습니다.
     dataset = datasets.load_dataset(dataset_path, split=split, cache_dir=cache_dir)
     print('done')
 
@@ -218,9 +217,11 @@ def get_uf(split: str, silent: bool = False, cache_dir: str = None, dataset_path
 
     for row in tqdm.tqdm(dataset, desc=f'Processing UltraFeedback({split})', disable=silent):
         if 'chosen' in row and 'rejected' in row:
+            # UltraFeedback 형식 (List of dicts) 처리
             prompt_c, chosen_resp = messages_to_prompt_and_response(row['chosen'])
             prompt_r, rejected_resp = messages_to_prompt_and_response(row['rejected'])
             
+            # Prompt가 동일한지 확인 (보통 동일함)
             if prompt_c != prompt_r:
                 prompt = prompt_c
             else:
@@ -233,7 +234,7 @@ def get_uf(split: str, silent: bool = False, cache_dir: str = None, dataset_path
             data[prompt]['sft_target'] = chosen_resp
 
         else:
-            # 예외 케이스 처리
+            # 예외 케이스: messages 포맷인 경우
             prompt, resp = messages_to_prompt_and_response(row['messages'])
             n_responses = len(data[prompt]['responses'])
             data[prompt]['responses'].append(resp)
