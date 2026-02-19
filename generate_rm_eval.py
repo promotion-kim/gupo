@@ -209,7 +209,7 @@ def main(args):
         else:
             split = args.split
         print(f"📂 Loading dataset: {dataset_name} (split: {args.split})")
-        dataset = load_dataset(dataset_name, split=args.split)
+        dataset = load_dataset(dataset_name, split=split)
 
         print("🔍 Processing prompts...")
         all_prompts = []
