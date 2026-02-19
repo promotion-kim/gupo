@@ -52,6 +52,41 @@ def parse_conversation(text):
             
     return messages
 
+def messages_to_prompt_and_response(messages):
+    assert isinstance(messages, list) and len(messages) > 0
+
+    last_asst_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "assistant":
+            last_asst_idx = i
+            break
+    if last_asst_idx is None:
+        raise ValueError("No assistant message found in messages")
+
+    parts = []
+    for m in messages[:last_asst_idx]:
+        role = m.get("role")
+        content = (m.get("content") or "")
+        if role == "user":
+            parts.append("\n\nHuman: " + content)
+        elif role == "assistant":
+            parts.append("\n\nAssistant: " + content)
+        else:
+            continue
+
+    prompt = "".join(parts)
+    if not prompt.startswith("\n\nHuman:"):
+        prompt = "\n\nHuman:" + prompt
+
+    if not prompt.endswith("\n\nAssistant:"):
+        prompt = prompt + "\n\nAssistant:"
+
+    response = (messages[last_asst_idx].get("content") or "")
+
+    if len(response) > 0 and not response.startswith(" "):
+        response = " " + response
+    return prompt, response
+    
 class ArmoRMPipeline:
     def __init__(self, model_id, device, torch_dtype=torch.bfloat16, truncation=True, trust_remote_code=True, max_length=4096):
         self.model = AutoModelForSequenceClassification.from_pretrained(
@@ -169,14 +204,34 @@ def main(args):
         config = OmegaConf.load(config_dir)
 
         dataset_name = args.dataset_name or config.datasets[0]
+        if dataset_name == "HuggingFaceH4/ultrafeedback_binarized" or dataset_name == "uf":
+            split = "test_prefs"
+        else:
+            split = args.split
         print(f"📂 Loading dataset: {dataset_name} (split: {args.split})")
         dataset = load_dataset(dataset_name, split=args.split)
 
         print("🔍 Processing prompts...")
         all_prompts = []
-        for row in tqdm.tqdm(dataset, desc='Extracting Prompts'):
-            prompt = extract_anthropic_prompt(row['chosen'])
-            all_prompts.append(prompt)
+        if dataset_name == "HuggingFaceH4/ultrafeedback_binarized" or dataset_name == "uf":
+            for row in tqdm.tqdm(dataset, desc=f'Processing UltraFeedback({split})'):
+                if 'chosen' in row and 'rejected' in row:
+                    prompt_c, chosen_resp = messages_to_prompt_and_response(row['chosen'])
+                    prompt_r, rejected_resp = messages_to_prompt_and_response(row['rejected'])
+                    
+                    if prompt_c != prompt_r:
+                        prompt = prompt_c
+                    else:
+                        prompt = prompt_c
+
+                else:
+                    prompt, resp = messages_to_prompt_and_response(row['messages'])
+                
+                all_prompts.append(prompt)
+        else:
+            for row in tqdm.tqdm(dataset, desc='Extracting Prompts'):
+                prompt = extract_anthropic_prompt(row['chosen'])
+                all_prompts.append(prompt)
         
         if args.num_eval_samples > 0 and args.num_eval_samples < len(all_prompts):
             print(f"🎲 Randomly sampling {args.num_eval_samples} prompts (Seed: {args.seed})")
