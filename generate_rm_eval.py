@@ -248,6 +248,7 @@ def main(args):
         # [수정된 부분] gpu_memory_utilization 인자 적용
         llm = LLM(
             model=model_path,
+            tokenizer="Qwen/Qwen2.5-7B",
             enable_lora=use_lora,
             dtype="bfloat16",
             seed=args.seed,
