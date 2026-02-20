@@ -434,11 +434,6 @@ class BasicTrainer(object):
                 self.save(epoch_dir, metrics=None)
                 rank0_print(f'Checkpoint saved to {epoch_dir}')
 
-                # 2. LATEST 폴더 저장 (덮어쓰기)
-                latest_dir = os.path.join(self.run_dir, 'LATEST')
-                self.save(latest_dir, metrics=None)
-                rank0_print(f'Checkpoint saved to {latest_dir}')
-
             # 멀티 GPU 동기화
             if self.world_size > 1:
                 import torch.distributed as dist
