@@ -406,12 +406,12 @@ class BasicTrainer(object):
                 self.batch_counter += 1
                 self.example_counter += self.config.batch_size
 
-                # ===== [수정 1] step-40000에서만 저장 =====
-                if self.batch_counter == 40000 and self.rank == 0:
-                    step_dir = os.path.join(self.run_dir, f'step-{self.batch_counter}')
-                    self.save(step_dir, metrics=None)
-                    rank0_print(f'Checkpoint saved to {step_dir}')
-                # ==========================================
+                # ===== [수정 1] 1에폭 절반 스텝에서 저장 =====
+                if self.batch_counter == (steps_per_epoch // 2) and self.rank == 0:
+                    half_step_dir = os.path.join(self.run_dir, f'step-{self.batch_counter}-half')
+                    self.save(half_step_dir, metrics=None)
+                    rank0_print(f'Checkpoint saved at half of epoch 1 to {half_step_dir}')
+                # ==============================================
 
                 if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
                     mean_train_metrics = {k: sum(v) / len(v) for k, v in batch_metrics.items()}
