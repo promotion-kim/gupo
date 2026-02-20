@@ -406,6 +406,13 @@ class BasicTrainer(object):
                 self.batch_counter += 1
                 self.example_counter += self.config.batch_size
 
+                # ===== [수정 1] step-40000에서만 저장 =====
+                if self.batch_counter == 40000 and self.rank == 0:
+                    step_dir = os.path.join(self.run_dir, f'step-{self.batch_counter}')
+                    self.save(step_dir, metrics=None)
+                    rank0_print(f'Checkpoint saved to {step_dir}')
+                # ==========================================
+
                 if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
                     mean_train_metrics = {k: sum(v) / len(v) for k, v in batch_metrics.items()}
                     mean_train_metrics['counters/examples'] = self.example_counter
